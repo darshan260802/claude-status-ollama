@@ -76,7 +76,7 @@ function formatDuration(targetDate) {
 
 function usageSegment(label, percent, colorize) {
   if (percent === null || percent === undefined) return "";
-  const rounded = Math.round(percent);
+  const rounded = parseFloat(percent);
   const bar = progressBar(rounded);
   const coloredBar = rounded >= 90
     ? colorize.red(bar)
