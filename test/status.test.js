@@ -22,10 +22,43 @@ describe("buildStatusLine", () => {
 
     assert.ok(line.includes("Claude"), "model");
     assert.ok(line.includes("user@example.com"), "email");
-    assert.ok(line.includes("Auto ON"), "auto switch");
+    assert.ok(line.includes("Auto Switch ON"), "auto switch");
     assert.ok(line.includes("Sess"), "session usage");
     assert.ok(line.includes("Week"), "weekly usage");
-    assert.ok(line.includes("Resets"), "resets");
+    assert.ok(line.includes("reset:"), "reset timers");
+  });
+
+  it("renders from the new connectedAccount + usage response shape", () => {
+    const line = buildStatusLine({
+      ok: true,
+      data: {
+        device: {
+          id: "vV4v2VjN5C9ge2Mf1gnv",
+          nickname: "Home PC",
+          connectedAccountId: "YBT9CHb2yPCgFhXzuuJi",
+        },
+        connectedAccount: {
+          id: "YBT9CHb2yPCgFhXzuuJi",
+          email: "nityabalar1+o3@gmail.com",
+          sessionUsage: "9.7%",
+          sessionResetIn: "2 hours.",
+          weeklySessionUsage: "16.4%",
+          weeklySessionResetIn: "1 day.",
+        },
+        usage: {
+          session: { usage: "9.7%", reset: "2 hours." },
+          weekly: { usage: "16.4%", reset: "1 day." },
+        },
+        autoSwitch: { enabled: true, triggered: false, reason: null },
+      },
+    }, { plain: true });
+
+    assert.ok(line.includes("Claude"), "model");
+    assert.ok(line.includes("nityabalar1+o3@gmail.com"), "email");
+    assert.ok(line.includes("Sess"), "session usage");
+    assert.ok(line.includes("Week"), "weekly usage");
+    assert.ok(line.includes("reset:"), "reset timers");
+    assert.ok(line.includes("Auto Switch ON"), "auto switch");
   });
 
   it("prefixes with Switched when autoSwitch.triggered is true", () => {

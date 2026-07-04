@@ -36,12 +36,11 @@ export async function fetchStatus(token, { timeout = 8000 } = {}) {
         ok: false,
         status: response.status,
         data: null,
-        error: `HTTP ${response.status}${detail ? `: ${detail.slice(0, 120)}` : ""}`,
+        error: `HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
       };
     }
 
     const data = await response.json();
-    console.log('data', data)
     return { ok: true, data, error: null };
   } catch (err) {
     clearTimeout(timer);

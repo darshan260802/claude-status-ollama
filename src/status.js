@@ -2,7 +2,7 @@ import chalk from "chalk";
 
 const BAR_WIDTH = 10;
 const MAX_EMAIL_LEN = 24;
-const MAX_LINE_LEN = 118;
+const DEFAULT_MAX_WIDTH = 200;
 const ANSI_RE = /\[[0-9;]*m/g;
 
 const MODEL_ALIASES = {
@@ -74,22 +74,22 @@ function formatDuration(targetDate) {
   return `${seconds}s`;
 }
 
-function usageSegment(label, usage, colorize) {
-  if (!usage) return "";
-  const percent = Math.round(usage.percent ?? 0);
-  const bar = progressBar(percent);
-  const coloredBar = percent >= 90
+function usageSegment(label, percent, colorize) {
+  if (percent === null || percent === undefined) return "";
+  const rounded = Math.round(percent);
+  const bar = progressBar(rounded);
+  const coloredBar = rounded >= 90
     ? colorize.red(bar)
-    : percent >= 70
+    : rounded >= 70
       ? colorize.yellow(bar)
       : colorize.green(bar);
-  return `${label}[${coloredBar}] ${percent}%`;
+  return `${label}[${coloredBar}] ${rounded}%`;
 }
 
 function autoSwitchSegment(autoSwitch, colorize) {
-  if (!autoSwitch) return colorize.gray("Auto OFF");
+  if (!autoSwitch) return colorize.gray("Auto Switch OFF");
   const on = autoSwitch.enabled !== false;
-  const label = on ? "Auto ON" : "Auto OFF";
+  const label = on ? "Auto Switch ON" : "Auto Switch OFF";
   const colored = on ? colorize.green(label) : colorize.red(label);
   return colored;
 }
@@ -100,6 +100,90 @@ function noColorChalk() {
       return (value) => String(value ?? "");
     },
   });
+}
+
+function parsePercent(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const match = String(value).trim().match(/^([0-9]+(?:\.[0-9]+)?)\s*%?$/);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseHumanDuration(text) {
+  if (!text) return null;
+  const match = String(text)
+    .trim()
+    .toLowerCase()
+    .match(/^([0-9]+(?:\.[0-9]+)?)\s*(second|seconds|minute|minutes|hour|hours|day|days|week|weeks|month|months)s?\.?$/);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+
+  const unit = match[2];
+  const msPerUnit = {
+    second: 1000,
+    minute: 60 * 1000,
+    hour: 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+  };
+  return Math.round(amount * (msPerUnit[unit] || 0));
+}
+
+function durationStringToDate(text) {
+  const ms = parseHumanDuration(text);
+  return ms === null ? null : new Date(Date.now() + ms).toISOString();
+}
+
+function normalizeUsage(data) {
+  // New API shape: usage.session.usage and usage.weekly.usage as percent strings.
+  if (data.usage?.session?.usage !== undefined) {
+    return {
+      session: parsePercent(data.usage.session.usage),
+      weekly: parsePercent(data.usage.weekly.usage),
+    };
+  }
+  // Alternative new shape on connectedAccount.
+  if (data.connectedAccount?.sessionUsage !== undefined) {
+    return {
+      session: parsePercent(data.connectedAccount.sessionUsage),
+      weekly: parsePercent(data.connectedAccount.weeklySessionUsage),
+    };
+  }
+  // Legacy shape.
+  return {
+    session:
+      parsePercent(data.sessionUsage?.percent) ??
+      parsePercent(data.session_usage?.percent) ??
+      parsePercent(data.session?.percent),
+    weekly:
+      parsePercent(data.weeklyUsage?.percent) ??
+      parsePercent(data.weekly_usage?.percent) ??
+      parsePercent(data.weekly?.percent),
+  };
+}
+
+function normalizeResets(data) {
+  // New API shape: usage.session.reset and usage.weekly.reset as human durations.
+  if (data.usage?.session?.reset !== undefined) {
+    return {
+      session: durationStringToDate(data.usage.session.reset),
+      weekly: durationStringToDate(data.usage.weekly.reset),
+    };
+  }
+  // Alternative new shape on connectedAccount.
+  if (data.connectedAccount?.sessionResetIn !== undefined) {
+    return {
+      session: durationStringToDate(data.connectedAccount.sessionResetIn),
+      weekly: durationStringToDate(data.connectedAccount.weeklySessionResetIn),
+    };
+  }
+  // Legacy ISO date shape.
+  return data.resets || data.resetTimes || {};
 }
 
 function visibleLength(str) {
@@ -127,7 +211,28 @@ function truncateVisible(str, maxLen) {
   return result + "[0m…";
 }
 
-export function buildStatusLine(apiResult, { plain = false } = {}) {
+function truncateByRemovingSegments(segments, separator, maxVisible) {
+  // Start with the full line; if it does not fit, drop the lowest-priority
+  // segment(s) from the end until it does. We never force an ellipsis.
+  const sep = visibleLength(separator);
+  for (let i = segments.length; i > 0; i--) {
+    const keep = segments.slice(0, i);
+    const line = keep.join(separator);
+    const len = visibleLength(line) + (keep.length > 1 ? sep * (keep.length - 1) : 0);
+    if (len <= maxVisible) return line;
+  }
+  return segments[0] || "";
+}
+
+function resolveMaxWidth(widthOption) {
+  if (widthOption !== undefined && Number.isFinite(widthOption) && widthOption > 0) {
+    return Math.floor(widthOption);
+  }
+  const columns = process.stdout?.columns || 0;
+  return columns > 0 ? Math.min(columns, DEFAULT_MAX_WIDTH) : DEFAULT_MAX_WIDTH;
+}
+
+export function buildStatusLine(apiResult, { plain = false, width } = {}) {
   const colorize = plain ? noColorChalk() : chalk;
 
   const model = detectClaudeModel();
@@ -153,11 +258,13 @@ export function buildStatusLine(apiResult, { plain = false } = {}) {
   }
 
   const data = apiResult.data || {};
-  const email = sanitizeEmail(data.email || data.account?.email);
+
+  const email = sanitizeEmail(
+    data.connectedAccount?.email || data.email || data.account?.email
+  );
   const autoSwitch = data.autoSwitch || data.auto_switch;
-  const sessionUsage = data.sessionUsage || data.session_usage || data.session;
-  const weeklyUsage = data.weeklyUsage || data.weekly_usage || data.weekly;
-  const resets = data.resets || data.resetTimes || {};
+  const usage = normalizeUsage(data);
+  const resets = normalizeResets(data);
   const triggered = autoSwitch?.triggered === true;
 
   const segments = [];
@@ -172,20 +279,20 @@ export function buildStatusLine(apiResult, { plain = false } = {}) {
     segments.push(colorize.white(email));
   }
 
-  const sess = usageSegment("Sess ", sessionUsage, colorize);
-  if (sess) segments.push(sess);
-
-  const week = usageSegment("Week ", weeklyUsage, colorize);
-  if (week) segments.push(week);
-
-  segments.push(autoSwitchSegment(autoSwitch, colorize));
-
   const sessionReset = formatDuration(resets.session || resets.sessionReset);
   const weeklyReset = formatDuration(resets.weekly || resets.weeklyReset);
-  if (sessionReset || weeklyReset) {
-    const label = `Resets ${sessionReset || "-"}/${weeklyReset || "-"}`;
-    segments.push(colorize.gray(label));
+
+  const sess = usageSegment("Sess ", usage.session, colorize);
+  if (sess) {
+    segments.push(sess + colorize.gray(` | reset: ${sessionReset || "-"}`));
   }
+
+  const week = usageSegment("Week ", usage.weekly, colorize);
+  if (week) {
+    segments.push(week + colorize.gray(` | reset: ${weeklyReset || "-"}`));
+  }
+
+  segments.push(autoSwitchSegment(autoSwitch, colorize));
 
   if (thinking) {
     segments.push(colorize.magenta("Think: " + (thinking.level || thinking.effort)));
@@ -194,24 +301,34 @@ export function buildStatusLine(apiResult, { plain = false } = {}) {
   const separator = plain ? " | " : " " + chalk.dim("|") + " ";
   const line = segments.join(separator);
 
-  console.log('line', line, visibleLength(line), MAX_LINE_LEN)
-  // Hard cap to keep the line readable in narrow terminals.
-  // truncateVisible preserves ANSI escape sequences so colors do not bleed.
-  return visibleLength(line) > MAX_LINE_LEN ? truncateVisible(line, MAX_LINE_LEN) : line;
+  // Use the terminal width when available, capped at a reasonable maximum.
+  // In non-TTY / piped output, fall back to DEFAULT_MAX_WIDTH.
+  const maxWidth = resolveMaxWidth(width);
+
+  // Only truncate as a last resort, and prefer dropping low-priority segments
+  // (thinking, auto switch, weekly, session) before forcing an ellipsis.
+  if (visibleLength(line) <= maxWidth) return line;
+  return truncateByRemovingSegments(segments, separator, maxWidth);
 }
 
 export function buildJsonStatus(apiResult) {
   const data = apiResult?.data || {};
+  const usage = normalizeUsage(data);
+  const resets = normalizeResets(data);
   return {
     model: detectClaudeModel(),
     thinking: detectThinking(),
     ok: apiResult?.ok ?? false,
     noToken: apiResult?.noToken ?? false,
     error: apiResult?.error || null,
-    email: data.email || data.account?.email || null,
+    email: data.connectedAccount?.email || data.email || data.account?.email || null,
+    device: data.device || null,
+    connectedAccount: data.connectedAccount || null,
     autoSwitch: data.autoSwitch || data.auto_switch || null,
-    sessionUsage: data.sessionUsage || data.session_usage || data.session || null,
-    weeklyUsage: data.weeklyUsage || data.weekly_usage || data.weekly || null,
-    resets: data.resets || data.resetTimes || null,
+    sessionUsage: usage.session,
+    weeklyUsage: usage.weekly,
+    sessionResetIn: data.usage?.session?.reset || data.connectedAccount?.sessionResetIn || null,
+    weeklyResetIn: data.usage?.weekly?.reset || data.connectedAccount?.weeklySessionResetIn || null,
+    resets,
   };
 }

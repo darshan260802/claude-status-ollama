@@ -14,6 +14,7 @@ cli
   .option("--plain", "Disable colors and emoji for plain terminal/script output")
   .option("--json", "Print raw JSON instead of a formatted status line")
   .option("--watch <seconds>", "Refresh the status line every N seconds (manual testing mode)")
+  .option("--width <columns>", "Maximum status-line width (default: terminal width capped at 200)")
   .help()
   .version("1.0.0");
 
@@ -32,17 +33,15 @@ cli.command("setup", "Configure Claude Code status-line hook in settings.json")
     }
   });
 
-async function runStatus({ token, tokenFile, plain, json, watchSeconds }) {
-  console.log('hi', token, tokenFile, plain, json, watchSeconds)
+async function runStatus({ token, tokenFile, plain, json, watchSeconds, width }) {
   const resolvedToken = resolveToken({ token, tokenFile });
   const apiResult = await fetchStatus(resolvedToken);
-  console.log('apiResult', apiResult, resolvedToken)
 
   if (json) {
     const output = buildJsonStatus(apiResult);
     console.log(JSON.stringify(output, null, 2));
   } else {
-    console.log(buildStatusLine(apiResult, { plain }));
+    console.log(buildStatusLine(apiResult, { plain, width }));
   }
 }
 
@@ -72,6 +71,13 @@ async function main() {
     return;
   }
 
+  const width = options.width ? Number(options.width) : undefined;
+  if (options.width && (Number.isNaN(width) || width <= 0)) {
+    console.error("Error: --width requires a positive number of columns");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
     await runStatus({
       token: options.token,
@@ -79,6 +85,7 @@ async function main() {
       plain: options.plain,
       json: options.json,
       watchSeconds,
+      width,
     });
 
     if (watchSeconds > 0) {
@@ -90,6 +97,7 @@ async function main() {
             plain: options.plain,
             json: options.json,
             watchSeconds,
+            width,
           });
         } catch (err) {
           console.error(`Watch refresh failed: ${err.message || err}`);
