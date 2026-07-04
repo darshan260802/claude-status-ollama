@@ -1,6 +1,6 @@
 {
   "name": "claude-status-ollama",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude Code status-line hook for Ollama auto-switcher usage and account state",
   "type": "module",
   "main": "index.js",
